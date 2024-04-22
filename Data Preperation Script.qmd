@@ -1,0 +1,358 @@
+---
+title: "Data Preperation Script"
+format: pdf
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(message =  FALSE)
+knitr::opts_chunk$set(warning =  FALSE)
+knitr::opts_chunk$set(error =  FALSE)
+```
+
+```{r error=FALSE,warning=FALSE,echo=FALSE}
+# load libraries
+library(conflicted)
+conflicts_prefer(dplyr::filter())
+conflicts_prefer(dplyr::select())
+conflicts_prefer(dplyr::summarize())
+ conflicted::conflicts_prefer(caret::RMSE)
+  conflicted::conflicts_prefer(caret::MAE)
+
+library(tidyverse)
+library(Hmisc)
+library(scales)
+library(lubridate)
+library(modelsummary)
+library(gridExtra) # plots
+
+library(caret)      # For model training and evaluation
+library(glmnet)     # For Elastic Net regression
+library(randomForest)  # For Random Forest regression
+library(xgboost)    # For XGBoost regression
+
+# library(MLmetrics)
+library(kableExtra)
+library(isotree)
+
+```
+
+
+# Read and clean Data 
+```{r}
+members <-  read.csv("data/members.csv")%>% mutate(  
+            memberID = as.numeric(str_replace(memberID , "," ,"")) , 
+             dateOfBirth = mdy(dateOfBirth), 
+             StartDate =mdy(StartDate), 
+             EndDate = mdy(EndDate) , 
+             age =  year(StartDate) - year(dateOfBirth)
+             ) %>% mutate( age_group = case_when(
+  age < 5 ~ "less than 5" , 
+  age >=5 & age <= 14 ~ "5-14 years" , 
+  age >= 15& age<=24 ~ "15-24 years" , 
+  age >= 25& age<=34 ~ "25-34 years" , 
+  age >= 35& age<=54 ~ "35-54 years" , 
+  age >= 55 ~ "55+ years" ,
+  TRUE ~ "--"
+  ) , age_group = factor(age_group, 
+                   ordered = T, 
+                   levels = c(
+                     "less than 5",
+                     "5-14 years",
+                              "15-24 years", 
+                              "25-34 years", 
+                              "35-54 years", 
+                              "55+ years")) ) %>% select(-IDNO) %>% 
+   group_by(memberID) %>% slice_head(n=1)  %>% 
+   left_join(read.csv("data/member_condition.csv") %>% 
+      rename(memberID = MEMBER_ID) %>% 
+  mutate(memberID = as.numeric(memberID)) %>% 
+  select(-IDNO) %>% 
+         group_by(memberID) %>% slice_head(n=1) ) %>%
+  mutate(  duration_months = round(as.numeric(difftime(EndDate, StartDate, units = "weeks"))/4)) %>%
+    mutate(number_of_disease = ((DIABETES +CAD + CHF+HYPERTENSION+ COPD )) ) %>% 
+  select(memberID , Gender , age , age_group , Product  , number_of_disease ,DIABETES ,CAD , CHF,HYPERTENSION, COPD ,duration_months )
+ 
+write.csv(members , "data\\results\\members_condition.csv")
+
+
+
+
+# remove all Voided claims
+# remove all claims with missing data 
+# remove all Cases with Cases or Services less than 1
+# remove all claims with missing member id
+
+claims <- read.csv("data/claims.csv") %>% 
+    rename(memberID = MemberID) %>% 
+    mutate(memberID = as.numeric(memberID)) %>% 
+  mutate( serviceDate = mdy(ServiceDate) , 
+          year = year(serviceDate) , 
+          month = month(serviceDate) , 
+          dayMonth = mday(serviceDate) ,
+          AllowedCharges = round(AllowedCharges) , 
+          PaidClaims = round(PaidClaims) , 
+          OPL = round(OPL) 
+          ) %>% 
+    filter(Cases >= 0 & Services >=0  , !is.na(serviceDate))  %>%
+   filter(!is.na(memberID)) %>%
+   filter(ClaimStatusCd != "J")  %>% 
+  inner_join(
+    read.csv("data/procedure.csv")  %>% 
+      select(Code_Type ,Code_Value,procedure_desc) ,
+      by = c("Code_value"="Code_Value" ,"Code_type"="Code_Type"))
+
+
+claims_statistics <-  read.csv("data/claims.csv") %>% 
+    rename(memberID = MemberID) %>% 
+    mutate(memberID = as.numeric(memberID)) %>% 
+  mutate( serviceDate = mdy(ServiceDate) , 
+          year = year(serviceDate) , 
+          month = month(serviceDate) , 
+          dayMonth = mday(serviceDate) ,
+          AllowedCharges = round(AllowedCharges) , 
+          PaidClaims = round(PaidClaims) , 
+          OPL = round(OPL) 
+          ) 
+
+claims_statistics   %>% filter( !(Cases >= 0 & Services >=0)  )  %>% count()
+claims_statistics   %>% filter( is.na(serviceDate)  )  %>% count()
+claims_statistics   %>% filter(is.na(memberID))  %>% count()
+claims_statistics   %>% filter(ClaimStatusCd == "J")   %>% count()
+
+# Data Aggregation 
+
+## Members and claims
+membersClaims <- claims   %>% inner_join(members)
+write.csv(membersClaims , "data\\results\\membersClaims.csv")
+write.csv(claims , "data\\results\\claims_cleaned.csv")
+
+
+remove(claims )
+membersClaims %>% head() %>% knitr::kable(caption = "Claims Row Data : Step 1")
+
+membersClaims %>% mutate(Code_type = as.factor(Code_type)) %>% select(Code_type) %>% summary()
+
+```
+
+
+## Data Aggregation members in each year 
+```{r}
+
+# First Indicator (Has Disease  ?) and number of disease
+members <- members %>% 
+  mutate(Has_Disease = case_when(
+    number_of_disease > 0 ~ 1 , 
+    number_of_disease == 0 ~ 0 , 
+    TRUE ~ 0 
+  ))
+
+
+# Second  indicators (claim frequency  ) 
+members <- members %>% left_join(membersClaims %>%
+                                   group_by(memberID , year ) %>%
+                                   summarize(
+                                     Claim_Count = n() 
+                                     ))  
+
+## Second  indicators (claim frequency  ) per ClaimType 
+ members <- members %>% left_join(membersClaims %>%
+    group_by(memberID , ClaimType , year) %>%
+    summarize(
+        Claim_Count = n() 
+    ) %>%   mutate(ClaimType = paste0(ClaimType , "_ClaimType_frequency")) %>%
+ spread(key = ClaimType , value =Claim_Count ))
+
+## Second  indicators (claim frequency  ) per  Code_type
+members <- members %>% left_join(membersClaims %>%
+    group_by(memberID , Code_type , year ) %>%
+    summarize(
+        Claim_Count = n() 
+    ) %>%   mutate(Code_type = paste0(Code_type , "_Code_type_frequency")) %>%
+ spread(key = Code_type , value =Claim_Count )    )
+ 
+
+# Third indicators (Claim Amount )
+members <- members %>% left_join(membersClaims %>%
+                                   group_by(memberID , year) %>%
+                                   summarize(
+                                     Claim_Amount = sum(PaidClaims)
+                                     ))  
+
+
+
+## Third indicators (Claim Amount ) per ClaimType  
+ members <- members %>% left_join(membersClaims %>%
+    group_by(memberID , ClaimType ,  year ) %>%
+    summarize(
+        Claim_Amount = sum(PaidClaims)
+    ) %>%   mutate(ClaimType = paste0(ClaimType , "_ClaimType_Claim_Amount_total")) %>%
+ spread(key = ClaimType , value =Claim_Amount ))
+
+
+## Third indicators (Claim Amount ) per Code_type  
+members <- members %>% left_join(membersClaims %>%
+    group_by(memberID , Code_type , year) %>%
+    summarize(
+        Claim_Amount = sum(PaidClaims)
+    ) %>%   mutate(Code_type = paste0(Code_type , "_Code_type_Claim_Amount_total")) %>%
+ spread(key = Code_type , value =Claim_Amount ) )
+
+
+
+# Replace All Na Values with 0
+members <- members %>%mutate_all(~replace(., is.na(.), 0))
+write.csv2( members,   "data\\results\\members_with_complete_required_data_in_each_year.csv")
+
+
+
+```
+
+```{r}
+
+
+
+# prepare Data for Modeling
+
+
+members_data_for_model <- data.frame()
+members_list <- members %>% distinct(memberID)
+
+for (m_index in 1:nrow(members_list)){
+member = members_list[m_index,1 ]  
+members_recored <- members %>% filter(memberID == member)
+n <- nrow(members_recored)
+if(n > 1)
+for (i in 1:(nrow(members_recored)-1) ) {
+baseYearAmount <- members_recored[i, "Claim_Amount"]  # Get current row
+nextYearAmount <- members_recored[i+1, "Claim_Amount"]  # Get current row
+row <- members_recored[i, ]
+row$next_year_amout = nextYearAmount$Claim_Amount
+members_data_for_model <-   rbind(members_data_for_model ,row )
+}
+}
+
+write.csv2( members_data_for_model,   "data\\results\\members_data_for_model.csv")
+
+members_data_for_model %>% head() %>% knitr::kable(caption = "Members Data  : Step 2")
+dim(members_data_for_model)
+
+
+```
+
+
+
+## outliers Handling
+### using cluster to detect outliers 
+### voting clustering with box-plot 
+
+## using difference 
+```{r}
+# 
+# members_data_for_model <- read.csv2( "data\\results\\members_data_for_model.csv")
+# members_data_for_model2 <- read.csv2( "data\\results\\members_data_for_model.csv")
+# members_data_for_model$X <- NULL
+# members_data_for_model <- members_data_for_model %>% select(-DIABETES , -CAD , -CHF , -HYPERTENSION , -COPD)
+# 
+# members_data_for_model <- members_data_for_model %>% select( -memberID , -Claim_Count ,
+#                     -I_ClaimType_frequency ,-O_ClaimType_frequency , -P_ClaimType_frequency ,
+#                     -DRG_Code_type_frequency , -HCPC_Code_type_frequency , -REVCD_Code_type_frequency ,
+#                     -year , -number_of_disease ,  - age
+# 
+#                     )
+# 
+# originalData <- members_data_for_model
+# 
+# members_data_for_model[,"difference"] <-
+#   members_data_for_model[,"next_year_amout"]  - members_data_for_model[,"Claim_Amount"]
+# 
+# # Define the column name with outliers
+# column_name <- "difference"
+# 
+# # Calculate the lower and upper quartiles
+# lower_quartile <- quantile(members_data_for_model[[column_name]], 0.25)
+# upper_quartile <- quantile(members_data_for_model[[column_name]], 0.75)
+# 
+# # Calculate the interquartile range (IQR)
+# iqr <- upper_quartile - lower_quartile
+# 
+# # Calculate the lower and upper bounds to identify outliers
+# lower_bound <- lower_quartile - 1.5 * iqr
+# upper_bound <- upper_quartile + 1.5 * iqr
+# 
+# # Remove outliers from the data frame
+# members_data_for_model_outliers_diff <- members_data_for_model[members_data_for_model[[column_name]] >= lower_bound &
+#                                    members_data_for_model[[column_name]] <= upper_bound, ]
+# 
+# 
+# ## 2 outliers handling
+# 
+# # Calculate the lower and upper quartiles
+# lower_quartile <- quantile(members_data_for_model[[column_name]], 0.25)
+# upper_quartile <- quantile(members_data_for_model[[column_name]], 0.75)
+# 
+# # Calculate the interquartile range (IQR)
+# iqr <- upper_quartile - lower_quartile
+# 
+# # Calculate the lower and upper bounds to identify outliers
+# lower_bound <- lower_quartile - 1.5 * iqr
+# upper_bound <- upper_quartile + 1.5 * iqr
+# 
+# # Remove outliers from the data frame
+# members_data_for_modelAfterRemoveOutliers <- members_data_for_model[members_data_for_model[[column_name]] >= lower_bound &
+#                                    members_data_for_model[[column_name]] <= upper_bound, ]
+# 
+# 
+# members_data_for_model$difference <- NULL
+# 
+# 
+# 
+# 
+# members_data_for_model %>% head() %>% knitr::kable(caption = "Members Data (After outliers handling)  : Step 3")
+# dim(members_data_for_model)
+
+```
+
+## Using Isolation Forests
+
+```{r}
+members_data_for_model2 <- read.csv2( "data\\results\\members_data_for_model.csv")
+memberd_for_outliers_handling <- members_data_for_model2 
+memberd_for_outliers_handling $memberID <- NULL
+memberd_for_outliers_handling $age_group <- NULL
+ model_orig <- isolation.forest(
+    memberd_for_outliers_handling,
+    ndim=1, sample_size=256,
+    ntrees=100,
+    missing_action="fail"
+)
+pred_orig <- predict(model_orig, memberd_for_outliers_handling)
+pred_orig <- data.frame(names = names(pred_orig), values = pred_orig)
+memberd_for_outliers_handling$isOutlier <- pred_orig$values
+
+
+members_data_for_model_without_outliers <- memberd_for_outliers_handling%>% 
+  filter(isOutlier < 0.6) %>% 
+  select(-isOutlier)
+
+write.csv2( members_data_for_model_without_outliers,   "data\\results\\members_data_for_model_without_outliers.csv")
+
+
+
+```
+
+
+
+# EDA Before Modeling
+
+## Summary statistics 
+```{r}
+Hmisc::describe(members_data_for_model_without_outliers)
+
+```
+
+## Visualization for some variables to describe sample
+
+
+
+

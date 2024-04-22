@@ -1,0 +1,368 @@
+3---
+title: "Visualizations"
+format: html
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(message =  FALSE)
+knitr::opts_chunk$set(warning =  FALSE)
+knitr::opts_chunk$set(error =  FALSE)
+```
+
+```{r error=FALSE,warning=FALSE,echo=FALSE}
+# load libraries
+library(conflicted)
+conflicts_prefer(dplyr::filter())
+conflicts_prefer(dplyr::select())
+library(sparklyr)
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(scales)
+library(parsnip)
+library(broom)
+library(lubridate)
+library(modelsummary)
+library(caret)
+library(gridExtra) # plots
+reportPrimaryColor <- "#E69F00"
+```
+
+# Read Data
+```{r}
+df <- read.csv2("data\\merge_data.csv")
+ 
+df <- df %>% mutate(  
+             dateOfBirth = as.Date(dateOfBirth), 
+             StartDate = as.Date(StartDate), 
+             EndDate = as.Date(EndDate) , 
+             age =  year(as.Date("2018-01-01")) - year(dateOfBirth)
+             ) %>% 
+    filter(StartDate < "2018-01-01" & EndDate > "2018-12-31") %>% 
+  select(
+  memberID , Gender , age ,  address_county ,
+  Product ,
+  n_2015 ,n_2016 , n_2017, n_2018 ,
+  DIABETES , CAD  ,CHF , HYPERTENSION,  COPD ,
+  total_2015 ,total_2016, total_2017, total_2018 ,StartDate, EndDate
+) 
+
+# create new column age-group 
+
+df <- df %>% mutate( age_group = case_when(
+  age <= 14 ~ "5-14 years" , 
+  age >= 15& age<=24 ~ "15-24 years" , 
+  age >= 25& age<=34 ~ "25-34 years" , 
+  age >= 35& age<=54 ~ "35-54 years" , 
+  age >= 55 ~ "55+ years" ,
+  TRUE ~ "--"
+  ) , age_group = factor(age_group, 
+                   ordered = T, 
+                   levels = c("5-14 years",
+                              "15-24 years", 
+                              "25-34 years", 
+                              "35-54 years", 
+                              "55+ years")) )
+
+ 
+members <- read.csv(  "data\\results\\members_condition.csv") %>% filter(age_group != "less than 5")  %>% 
+  mutate(age_group = factor(age_group, 
+                   ordered = T, 
+                   levels = c(
+                     "5-14 years",
+                              "15-24 years", 
+                              "25-34 years", 
+                              "35-54 years", 
+                              "55+ years")) )
+
+claims_cleaned <- read.csv(  "data\\results\\claims_cleaned.csv") 
+
+
+```
+
+
+
+# Claims
+
+## Claims Service-Date and ClaimType
+
+```{r}
+claims <- claims_cleaned
+
+  
+ 
+claims %>% group_by(ClaimType , year ) %>% 
+  summarize(totatClaims = sum(AllowedCharges) ) %>% 
+  mutate(case_when(ClaimType == "I" ~ "Inpatient" ,
+                   ClaimType == "O" ~ "Outpatient" , 
+                   ClaimType == "P" ~ "Professional", 
+                   TRUE ~ " "
+                   )) %>% filter(year != 2019) %>%
+  
+     ggplot(aes(x= year , y = totatClaims , color = ClaimType)) +
+  geom_point(  )  +
+  geom_line(linewidth = 1) + 
+    ylim(0, NA)+
+  	scale_y_continuous(labels = label_number(suffix = " M $", scale = 1e-6)) +# millions
+  labs(  x = " " , y = " ")+
+  theme_minimal() +
+  theme(legend.position = "bottom", 
+        axis.text.y = element_text(size = 14,  face="bold") ,
+        axis.text.x = element_text(size = 14,  face="bold")
+        )
+```
+
+
+
+
+### Claims Service-Date and Code_type
+```{r}
+claims %>% group_by(Code_type , year) %>% 
+  summarize(totatClaims = sum(AllowedCharges) ) %>% filter(year != 2019) %>%
+     ggplot(aes(x= year , y = totatClaims , color = Code_type)) +
+  geom_point(  )  +
+  geom_line(linewidth = 1) + 
+    ylim(0, NA)+
+  	scale_y_continuous(labels = label_number(suffix = " M $", scale = 1e-6)) +# millions
+  labs( color = "Code Type" ,  x = " " , y = " ")+
+  theme_minimal() +
+  theme(legend.position = "bottom", 
+        axis.text.y = element_text(size = 14,  face="bold") ,
+        axis.text.x = element_text(size = 14,  face="bold")
+        )
+
+```
+
+
+ 
+
+
+
+## Claims Amount Per year 
+## Service-Date (Year)
+
+## Claims Service-Date and ClaimType
+
+ 
+## Claims Based on Type
+
+## Claims Amount Based on Code 
+
+
+# Members and Claims 
+## Claim total amount in each year based on age_group  
+```{r}
+
+data1 <- df %>% group_by(age_group ) %>% summarize(
+  total_2015 = sum(total_2015) , 
+  total_2016 = sum(total_2016) , 
+  total_2017 = sum(total_2017) , 
+  total_2018 = sum(total_2018) , 
+) %>%
+  gather("year" , "claimsTotalAmount" , total_2015:total_2018) %>% 
+  mutate(year = parse_number(year)) 
+
+
+members_age_group_plot <- members  %>%
+  group_by(age_group) %>%
+  summarize(count = n() )  %>% 
+  ggplot(aes(x= age_group , y = count , fill =age_group)) +
+  geom_col() + theme_light() +
+  theme(legend.position = "non" , 
+         axis.text.x = element_blank() ,
+        # axis.text.x = element_text(angle=90 , size = 8) 
+        ) +   labs(x="Age Group" , y = "Members Count" ) +  scale_y_continuous(labels = label_number(suffix = " ", ))
+  
+
+
+p1 <- data1 %>% ggplot(aes(x=age_group , y = claimsTotalAmount , fill =age_group )) +
+  geom_col(position = "dodge") + 
+  facet_wrap(.~year) + theme_light() +
+  theme(legend.position = "none" , 
+        axis.text.x = element_text(angle=90 , size = 8) 
+        ) +  scale_y_continuous(labels = label_number(suffix = " M", scale = 1e-6)) + labs(x="Age Group" , y = "Claims Total Amount" )
+
+
+ p2 <-   data1 %>% ggplot(aes(x=year , y = claimsTotalAmount , 
+                         fill =age_group , colour =age_group )) +
+ geom_point() + 
+  geom_line(linewidth = 1) + 
+  # facet_wrap(.~age_group , ncol = 1) +
+      theme_light() +
+  theme(legend.position = "none" , 
+        axis.text.x = element_text(angle=45) 
+        ) + 
+      scale_y_continuous(labels = label_number(suffix = " M", scale = 1e-6)) +
+      labs(fill = "Age Group" , colour = "Age Group") + labs(x="Year" , y = "Claims Total Amount" )
+ 
+  p3 <-   data1 %>% ggplot(aes(x=year , y = claimsTotalAmount , 
+                         fill =age_group , colour =age_group )) +
+ geom_point() + 
+  geom_line(linewidth = 1) + 
+  # facet_wrap(.~age_group , ncol = 1) +
+      theme_light() +
+  theme(legend.position = "top" , 
+        axis.text.x = element_text(angle=90) 
+        ) + 
+      scale_y_continuous(labels = label_number(suffix = " M", scale = 1e-6)) +
+      labs(fill = "Age Group" , colour = "Age Group")
+  
+
+
+ # function to extract legend from plot
+get_only_legend <- function(plot) {
+  plot_table <- ggplot_gtable(ggplot_build(plot))
+  legend_plot <- which(sapply(plot_table$grobs, function(x) x$name) == "guide-box")
+  legend <- plot_table$grobs[[legend_plot]]
+  return(legend)
+}
+                            
+# extract legend from plot1 using above function
+legend <- get_only_legend(p3) 
+
+# combine both plots using grid.arrange()
+combined_plot <- grid.arrange(members_age_group_plot, p2, ncol = 2)
+  
+
+# grid.arrange(combined_plot, p2, ncol = 2 ) 
+grid.arrange(combined_plot, legend, nrow = 2, heights = c(10, 2) , top = "")
+
+
+```
+
+
+
+
+
+
+
+
+
+## Claim total amount in each year based on gender  
+```{r}
+
+data1 <- df %>% group_by(Gender ) %>% summarize(
+  total_2015 = sum(total_2015) , 
+  total_2016 = sum(total_2016) , 
+  total_2017 = sum(total_2017) , 
+  total_2018 = sum(total_2018) , 
+) %>%
+  gather("year" , "claimsTotalAmount" , total_2015:total_2018) %>% 
+  mutate(year = parse_number(year)) 
+
+p1 <- data1 %>% ggplot(aes(x=Gender , y = claimsTotalAmount , fill =Gender )) +
+  geom_col(position = "dodge") + 
+  facet_wrap(.~year) + theme_light() +
+  theme(legend.position = "bottom" , 
+        axis.text.x = element_text(angle=45) 
+        ) +  scale_y_continuous(labels = label_number(suffix = " M", scale = 1e-6)) 
+
+
+ p2 <-   data1 %>% ggplot(aes(x=year , y = claimsTotalAmount , 
+                         fill =Gender , colour =Gender )) +
+ geom_point() + 
+  geom_line(linewidth = 1) + 
+      theme_light() +
+  theme(legend.position = "none" , 
+        axis.text.x = element_text(angle=45) 
+        ) + 
+      scale_y_continuous(labels = label_number(suffix = " M $", scale = 1e-6)) +
+      labs(fill = "Gender" , colour = "Gender")
+
+ 
+ members_gender_plot <- members %>%
+  group_by(Gender) %>%
+  summarize(count = n() )  %>% 
+  ggplot(aes(x= Gender , y = count , fill =Gender)) +
+  geom_col() + theme_light() +
+  theme(legend.position = "none" , 
+         axis.text.x = element_blank() ,
+        # axis.text.x = element_text(angle=90 , size = 8) 
+        ) +   labs(x="Gender" , y = "Members Count" ) +  scale_y_continuous(labels = label_number(suffix = " ", ))
+  
+legend <- get_only_legend(p1) 
+
+
+# combine both plots using grid.arrange()
+combined_plot <- grid.arrange(members_gender_plot, p2, ncol = 2)
+  
+
+# grid.arrange(combined_plot, p2, ncol = 2 ) 
+grid.arrange(combined_plot, legend, nrow = 2, heights = c(10, 2) , top = " ")
+
+
+  
+
+```
+
+
+
+
+
+
+
+
+## Claim total amount in each year based on Product  
+```{r}
+
+data1 <- df %>% group_by(Product ) %>% summarize(
+  total_2015 = sum(total_2015) , 
+  total_2016 = sum(total_2016) , 
+  total_2017 = sum(total_2017) , 
+  total_2018 = sum(total_2018) , 
+) %>%
+  gather("year" , "claimsTotalAmount" , total_2015:total_2018) %>% 
+  mutate(year = parse_number(year)) 
+
+p1 <- data1 %>% ggplot(aes(x=Product , y = claimsTotalAmount , fill =Product )) +
+  geom_col(position = "dodge") + 
+  facet_wrap(.~year) + theme_light() +
+  theme(legend.position = "bottom" , 
+        axis.text.x = element_text(angle=45) 
+        ) +  scale_y_continuous(labels = label_number(suffix = " M", scale = 1e-6)) 
+
+
+ p2 <-   data1 %>% ggplot(aes(x=year , y = claimsTotalAmount , 
+                         fill =Product , colour =Product )) +
+ geom_point() + 
+  geom_line(linewidth = 1) + 
+      theme_light() +
+  theme(legend.position = "none" , 
+        axis.text.x = element_text(angle=45) 
+        ) + 
+      scale_y_continuous(labels = label_number(suffix = " M $", scale = 1e-6)) +
+      labs(fill = "Gender" , colour = "Product")
+
+ 
+ members_Product_plot <- members %>%
+  group_by(Product) %>%
+  summarize(count = n() )  %>% 
+  ggplot(aes(x= Product , y = count , fill =Product)) +
+  geom_col() + theme_light() +
+  theme(legend.position = "none" , 
+         axis.text.x = element_blank() ,
+        # axis.text.x = element_text(angle=90 , size = 8) 
+        ) +   labs(x="Product" , y = "Members Count" ) +  scale_y_continuous(labels = label_number(suffix = " ", ))
+  
+legend <- get_only_legend(p1) 
+
+
+# combine both plots using grid.arrange()
+combined_plot <- grid.arrange(members_Product_plot, p2, ncol = 2)
+  
+
+# grid.arrange(combined_plot, p2, ncol = 2 ) 
+grid.arrange(combined_plot, legend, nrow = 2, heights = c(10, 2) , top = " ")
+
+
+  
+
+```
+
+
+
+
+
+
+

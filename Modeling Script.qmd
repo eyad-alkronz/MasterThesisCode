@@ -1,0 +1,309 @@
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(message =  FALSE)
+knitr::opts_chunk$set(warning =  FALSE)
+knitr::opts_chunk$set(error =  FALSE)
+```
+
+```{r error=FALSE,warning=FALSE,echo=FALSE}
+# load libraries
+library(conflicted)
+conflicts_prefer(dplyr::filter())
+conflicts_prefer(dplyr::select())
+conflicts_prefer(dplyr::summarize())
+ conflicted::conflicts_prefer(caret::RMSE)
+  conflicted::conflicts_prefer(caret::MAE)
+
+library(tidyverse)
+library(Hmisc)
+library(scales)
+library(lubridate)
+library(modelsummary)
+library(gridExtra) # plots
+
+library(caret)      # For model training and evaluation
+library(glmnet)     # For Elastic Net regression
+library(randomForest)  # For Random Forest regression
+library(xgboost)    # For XGBoost regression
+
+# library(MLmetrics)
+library(kableExtra)
+library(isotree)
+
+```
+
+
+
+# read data 
+```{r}
+members_data_for_model <- read.csv2("data\\results\\members_data_for_model.csv")
+
+```
+
+
+
+# Modeling
+
+```{r}
+# Calculate Explained Variance
+explained_variance <- function(predictions, actual) {
+  mean_actual <- mean(actual)
+  ss_total <- sum((actual - mean_actual)^2)
+  ss_residual <- sum((predictions - actual)^2)
+  explained_var <- 1 - (ss_residual / ss_total)
+  return(explained_var)
+}
+
+ 
+
+# Calculate RMSLE
+RMSLE <- function(predictions, actual) {
+  rmsle <- sqrt(mean(log(predictions + 1) - log(actual + 1))^2)
+  return(rmsle)
+}
+```
+
+```{r}
+
+predictionFunction <- function(members_df , name = "modelPerformance"){
+# df <- members_df
+# df$memberID<- NULL
+# df$X<- NULL
+
+set.seed(123)  # For reproducibility
+train_indices <- createDataPartition(df$next_year_amout, p = 0.8, list = FALSE)
+train <- df[train_indices, ]
+test <- df[-train_indices, ]
+
+predictors <- setdiff(names(df), "next_year_amout")  # Excluding the target variable
+x_train <- train[, predictors]
+y_train <- train$next_year_amout
+x_test <- test[, predictors]
+y_test <- test$next_year_amout
+
+model_list <- list(
+  "Linear Regression" = train(next_year_amout ~ ., data = train, method = "lm" ,   verbose = FALSE),
+   "Ridge Regression" = train(next_year_amout ~ ., data = train, method = "ridge"),
+  "Lasso Regression" = train(next_year_amout ~ ., data = train, method = "lasso" ),
+  "Elastic Net" = train(next_year_amout ~ ., data = train, method = "glmnet",   verbose = FALSE),
+  "Partial Least Squares" = train(next_year_amout ~ ., data = train, method = "pls",   verbose = FALSE),
+  "Support Vector Machines (Linear)" = train(next_year_amout ~ ., data = train, method = "svmLinear",   verbose = FALSE),
+  "K-Nearest Neighbors" = train(next_year_amout ~ ., data = train, method = "knn",   verbose = FALSE),
+  "Decision Tree" = train(next_year_amout ~ ., data = train, method = "rpart"),
+  "Random Forest" = train(next_year_amout ~ ., data = train, method = "rf",   verbose = FALSE),
+  "Gradient Boosting Machines" = train(next_year_amout ~ ., data = train, method = "gbm",   verbose = FALSE),
+  "Multivariate Adaptive Regression Splines" = train(next_year_amout ~ ., data = train, method = "earth"),
+  "Bayesian Generalized Linear Models" = train(next_year_amout ~ ., data = train, method = "bayesglm")
+  )
+
+
+model_results <- resamples(model_list)
+
+# Create a stacked ensemble model using caret's stack function
+stacked_model <- stack(models = model_list, method = "glm")
+
+# Predict using the stacked ensemble model
+stacked_predictions <- predict(stacked_model, newdata = test)
+
+# Evaluate ensemble performance
+stacked_rmse <- RMSE(stacked_predictions, test$next_year_amout)
+print(paste("Stacked Ensemble RMSE:", stacked_rmse))
+
+
+x <- summary(model_results)
+knitr::kable(x$statistics$MAE ,  caption = "MAE")
+knitr::kable(x$statistics$RMSE ,  caption = "RMSE")
+knitr::kable(x$statistics$Rsquared ,  caption = "Rsquared")
+
+summary(ensemble_model)
+
+
+ 
+
+### Test the models on the test data and obtain predictions:
+
+model_predictions <- list()
+for (model_name in names(model_list)) {
+  model <- model_list[[model_name]]
+  model_predictions[[model_name]] <- predict(model, newdata = x_test)
+}
+  # model_predictions[["stacked_model"]] <- predict(stacked_model, newdata = x_test)
+
+
+# Evaluate the performance of the models
+model_performance <- data.frame()
+for (model_name in names(model_predictions)) {
+  predictions <- model_predictions[[model_name]]
+  performance <- data.frame(
+    Model = model_name,
+    RMSE = RMSE(predictions, y_test),
+    R2 = R2(predictions, y_test),
+    MAE = MAE(predictions, y_test),
+    RMSE_SD = sd(predictions - y_test),
+    Explained_Var = explained_variance(predictions, y_test),
+    RMSLE = RMSLE(predictions, y_test)
+  )
+  
+
+  if(model_name == "Multivariate Adaptive Regression Splines"){
+  performance$R2 <- performance$y
+  performance$y <- NULL
+  }
+    model_performance <- rbind(model_performance, performance)
+
+  }
+
+write.csv2(model_performance , paste("data\\results\\model_performance\\" , name,".csv"))
+
+# Print the results in a tabular format
+knitr::kable(model_performance, align = "c")
+}
+
+
+```
+
+
+
+
+
+
+## Model1 : Data with outliers  
+
+```{r}
+
+predictionFunction(originalData, "WithoutOutliersHandling")
+```
+
+## Model : After  Remove outliers 
+```{r}
+
+members_data_for_model_without_outliers <- read.csv2("data\\results\\members_data_for_model_without_outliers.csv")
+
+members_data_for_model_without_outliers$X.1 <- NULL
+members_data_for_model_without_outliers$X<- NULL
+
+df <- members_data_for_model_without_outliers 
+name <- " Model _  After  Remove outliers "
+
+set.seed(123)  # For reproducibility
+train_indices <- createDataPartition(df$next_year_amout, p = 0.8, list = FALSE)
+train <- df[train_indices, ]
+test <- df[-train_indices, ]
+
+predictors <- setdiff(names(df), "next_year_amout")  # Excluding the target variable
+x_train <- train[, predictors]
+y_train <- train$next_year_amout
+x_test <- test[, predictors]
+y_test <- test$next_year_amout
+
+model_list <- list(
+  "Linear Regression" = train(next_year_amout ~ ., data = train, method = "lm" ,   verbose = FALSE),
+   "Ridge Regression" = train(next_year_amout ~ ., data = train, method = "ridge"),
+  "Lasso Regression" = train(next_year_amout ~ ., data = train, method = "lasso" ),
+  "Elastic Net" = train(next_year_amout ~ ., data = train, method = "glmnet",   verbose = FALSE),
+  "Partial Least Squares" = train(next_year_amout ~ ., data = train, method = "pls",   verbose = FALSE),
+  "Support Vector Machines (Linear)" = train(next_year_amout ~ ., data = train, method = "svmLinear",   verbose = FALSE),
+  "K-Nearest Neighbors" = train(next_year_amout ~ ., data = train, method = "knn",   verbose = FALSE),
+  "Decision Tree" = train(next_year_amout ~ ., data = train, method = "rpart"),
+  "Random Forest" = train(next_year_amout ~ ., data = train, method = "rf",   verbose = FALSE),
+  "Gradient Boosting Machines" = train(next_year_amout ~ ., data = train, method = "gbm",   verbose = FALSE),
+  "Multivariate Adaptive Regression Splines" = train(next_year_amout ~ ., data = train, method = "earth"),
+  "Bayesian Generalized Linear Models" = train(next_year_amout ~ ., data = train, method = "bayesglm")
+  )
+
+
+model_results <- resamples(model_list)
+
+# Create a stacked ensemble model using caret's stack function
+stacked_model <- stack(models = model_list, method = "glm")
+
+# Predict using the stacked ensemble model
+stacked_predictions <- predict(stacked_model, newdata = test)
+
+# Evaluate ensemble performance
+stacked_rmse <- RMSE(stacked_predictions, test$next_year_amout)
+print(paste("Stacked Ensemble RMSE:", stacked_rmse))
+
+
+x <- summary(model_results)
+knitr::kable(x$statistics$MAE ,  caption = "MAE")
+knitr::kable(x$statistics$RMSE ,  caption = "RMSE")
+knitr::kable(x$statistics$Rsquared ,  caption = "Rsquared")
+
+summary(ensemble_model)
+
+
+ 
+
+### Test the models on the test data and obtain predictions:
+
+model_predictions <- list()
+for (model_name in names(model_list)) {
+  model <- model_list[[model_name]]
+  model_predictions[[model_name]] <- predict(model, newdata = x_test)
+}
+  # model_predictions[["stacked_model"]] <- predict(stacked_model, newdata = x_test)
+
+
+# Evaluate the performance of the models
+model_performance <- data.frame()
+for (model_name in names(model_predictions)) {
+  predictions <- model_predictions[[model_name]]
+  performance <- data.frame(
+    Model = model_name,
+    RMSE = RMSE(predictions, y_test),
+    R2 = R2(predictions, y_test),
+    MAE = MAE(predictions, y_test),
+    RMSE_SD = sd(predictions - y_test),
+    Explained_Var = explained_variance(predictions, y_test),
+    RMSLE = RMSLE(predictions, y_test)
+  )
+  
+
+  if(model_name == "Multivariate Adaptive Regression Splines"){
+  performance$R2 <- performance$y
+  performance$y <- NULL
+  }
+    model_performance <- rbind(model_performance, performance)
+
+  }
+
+write.csv2(model_performance , paste("data\\results\\model_performance\\" , name,".csv"))
+
+# Print the results in a tabular format
+knitr::kable(model_performance, align = "c")
+
+```
+
+
+# check if Product significant in general model
+
+## Model2 : For only PPO members
+```{r}
+members_ppo <- members_data_for_model %>% filter(Product == "PPO") %>%
+  select(-Product ,- DRG_Code_type_Claim_Amount_total ,
+         -I_ClaimType_Claim_Amount_total , 
+         -REVCD_Code_type_Claim_Amount_total
+         )
+members_ppo <- members_ppo %>% filter(age_group != "less than 5")
+
+predictionFunction(members_ppo , "PPO_members")
+```
+
+
+## Model3 : For only HMO members
+```{r}
+MHOMembers <- members_data_for_model %>% filter(Product == "HMO") %>% 
+   select(-Product ,- DRG_Code_type_Claim_Amount_total ,
+         -I_ClaimType_Claim_Amount_total , 
+         -REVCD_Code_type_Claim_Amount_total
+         )
+members_ppo <- members_ppo %>% filter(age_group != "less than 5")
+predictionFunction(MHOMembers , "MHOMembers")
+```
+
+
+
+ 
